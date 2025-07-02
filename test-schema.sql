@@ -19,6 +19,24 @@ CREATE TABLE IF NOT EXISTS orders (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Пользовательские типы для тестирования
+CREATE TYPE user_status AS ENUM ('active', 'inactive', 'suspended', 'pending');
+CREATE TYPE contact_info AS (
+    email VARCHAR(100),
+    phone VARCHAR(20),
+    address TEXT
+);
+
+-- Таблица с пользовательскими типами
+CREATE TABLE IF NOT EXISTS user_profiles (
+    profile_id SERIAL PRIMARY KEY,
+    user_id UUID NOT NULL REFERENCES users(user_id),
+    status user_status DEFAULT 'pending',
+    contact contact_info,
+    preferences JSONB,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Apache Ignite test schema (создается через код)
 -- CREATE TABLE cache_users (
 --     user_id UUID PRIMARY KEY,

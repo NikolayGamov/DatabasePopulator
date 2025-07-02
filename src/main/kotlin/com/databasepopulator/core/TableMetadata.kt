@@ -21,7 +21,29 @@ data class ColumnMetadata(
     val size: Int,
     val nullable: Boolean,
     val autoIncrement: Boolean = false,
-    val defaultValue: String? = null
+    val defaultValue: String? = null,
+    val isUserDefinedType: Boolean = false,
+    val enumValues: List<String> = emptyList(),
+    val compositeTypeFields: List<CompositeTypeField> = emptyList()
+)
+
+/**
+ * Поле составного типа
+ */
+data class CompositeTypeField(
+    val name: String,
+    val typeName: String,
+    val sqlType: Int
+)
+
+/**
+ * Метаданные пользовательского типа
+ */
+data class UserDefinedType(
+    val name: String,
+    val category: String, // 'e' для enum, 'c' для composite
+    val enumValues: List<String> = emptyList(),
+    val compositeFields: List<CompositeTypeField> = emptyList()
 )
 
 /**

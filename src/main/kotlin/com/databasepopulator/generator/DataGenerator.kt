@@ -4,6 +4,8 @@ package com.databasepopulator.generator
 import com.databasepopulator.config.PopulatorConfig
 import com.databasepopulator.core.ColumnMetadata
 import com.databasepopulator.core.TableMetadata
+import com.databasepopulator.core.UserDefinedType
+import com.databasepopulator.core.CompositeTypeField
 import com.github.javafaker.Faker
 import org.postgresql.copy.CopyManager
 import org.postgresql.core.BaseConnection
@@ -286,6 +288,11 @@ class DataGenerator(private val config: PopulatorConfig) {
             return null // 10% шанс на null для nullable колонок
         }
         
+        // Обработка пользовательских типов
+        if (column.isUserDefinedType) {
+            return generateUserDefinedTypeValue(column)
+        }
+        
         return when (column.sqlType) {
             Types.VARCHAR, Types.CHAR, Types.LONGVARCHAR, Types.NVARCHAR, Types.NCHAR -> {
                 generateStringValue(column)
@@ -342,12 +349,63 @@ class DataGenerator(private val config: PopulatorConfig) {
     }
     
     /**
+     * Генерирует значение для пользовательского типа
+     */
+    private fun generateUserDefinedTypeValue(column: ColumnMetadata): Any? {
+        return when {
+            // ENUM тип
+            column.enumValues.isNotEmpty() -> {
+                column.enumValues.random()
+            }
+            
+            // Составной тип
+            column.compositeTypeFields.isNotEmpty() -> {
+                generateCompositeTypeValue(column.compositeTypeFields)
+            }
+            
+            else -> {
+                // Fallback для неизвестных пользовательских типов
+                println("Предупреждение: неизвестный пользовательский тип ${column.typeName}")
+                "UDT_${random.nextInt(1000)}"
+            }
+        }
+    }
+    
+    /**
+     * Генерирует значение для составного типа
+     */
+    private fun generateCompositeTypeValue(fields: List<CompositeTypeField>): String {
+        val values = fields.map { field ->
+            when (field.typeName.lowercase()) {
+                "text", "varchar", "char" -> "\"${faker.lorem().word()}\""
+                "integer", "int", "int4" -> random.nextInt(1000).toString()
+                "bigint", "int8" -> random.nextLong().toString()
+                "boolean", "bool" -> random.nextBoolean().toString()
+                "numeric", "decimal" -> (random.nextDouble() * 1000).toString()
+                "timestamp", "timestamptz" -> "\"${java.time.LocalDateTime.now()}\""
+                "date" -> "\"${java.time.LocalDate.now()}\""
+                else -> "\"${faker.lorem().word()}\""
+            }
+        }
+        
+        // Возвращаем в формате PostgreSQL ROW constructor
+        return "(${values.joinToString(",")})"
+    }
+    
+    /**
      * Устанавливает значение параметра в PreparedStatement
      */
     private fun setParameterValue(stmt: java.sql.PreparedStatement, paramIndex: Int, value: Any?, column: ColumnMetadata) {
         when {
             value == null -> stmt.setNull(paramIndex, column.sqlType)
-            value is String -> stmt.setString(paramIndex, value)
+            value is String -> {
+                if (column.isUserDefinedType) {
+                    // Для пользовательских типов используем setObject
+                    stmt.setObject(paramIndex, value)
+                } else {
+                    stmt.setString(paramIndex, value)
+                }
+            }
             value is Int -> stmt.setInt(paramIndex, value)
             value is Long -> stmt.setLong(paramIndex, value)
             value is Double -> stmt.setDouble(paramIndex, value)
@@ -357,7 +415,7 @@ class DataGenerator(private val config: PopulatorConfig) {
             value is java.sql.Timestamp -> stmt.setTimestamp(paramIndex, value)
             value is java.sql.Time -> stmt.setTime(paramIndex, value)
             value is java.math.BigDecimal -> stmt.setBigDecimal(paramIndex, value)
-            else -> stmt.setString(paramIndex, value.toString())
+            else -> stmt.setObject(paramIndex, value)
         }
     }
 }
