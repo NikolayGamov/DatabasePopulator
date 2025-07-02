@@ -37,11 +37,36 @@ CREATE TABLE IF NOT EXISTS user_profiles (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Таблица с массивами и JSONB
+CREATE TABLE IF NOT EXISTS advanced_data (
+    id SERIAL PRIMARY KEY,
+    user_id UUID NOT NULL REFERENCES users(user_id),
+    tags TEXT[] DEFAULT '{}',
+    scores INTEGER[] DEFAULT '{}',
+    settings JSONB DEFAULT '{}',
+    metadata JSON DEFAULT '{}',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Таблица для тестирования различных типов массивов
+CREATE TABLE IF NOT EXISTS array_tests (
+    id SERIAL PRIMARY KEY,
+    text_array TEXT[],
+    int_array INTEGER[],
+    bool_array BOOLEAN[],
+    decimal_array DECIMAL(10,2)[],
+    uuid_array UUID[],
+    timestamp_array TIMESTAMP[],
+    json_data JSONB,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Apache Ignite test schema (создается через код)
 -- CREATE TABLE cache_users (
 --     user_id UUID PRIMARY KEY,
 --     email VARCHAR(100),
---     full_name VARCHAR(100),
+--     cache_data VARCHAR(1000), -- для JSON данных в Ignite
+--     tags VARCHAR(500) -- для массивов в виде строки в Igniteull_name VARCHAR(100),
 --     last_login TIMESTAMP
 -- ) WITH "template=replicated";
 

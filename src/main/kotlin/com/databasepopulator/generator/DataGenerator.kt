@@ -145,8 +145,27 @@ class DataGenerator(private val config: PopulatorConfig) {
     private fun formatValueForCopy(value: Any?, column: ColumnMetadata): String {
         return when {
             value == null -> "NULL"
-            value is String -> value.replace("\t", "\\t").replace("\n", "\\n").replace("\r", "\\r")
+            value is String -> {
+                when (column.typeName.lowercase()) {
+                    "jsonb", "json" -> {
+                        // Для JSON экранируем кавычки и переносы строк
+                        value.replace("\"", "\\\"")
+                             .replace("\t", "\\t")
+                             .replace("\n", "\\n")
+                             .replace("\r", "\\r")
+                    }
+                    else -> {
+                        if (column.sqlType == Types.ARRAY || column.typeName.contains("[]")) {
+                            // Массивы передаем как есть
+                            value
+                        } else {
+                            value.replace("\t", "\\t").replace("\n", "\\n").replace("\r", "\\r")
+                        }
+                    }
+                }
+            }
             value is Boolean -> if (value) "t" else "f"
+            value is UUID -> value.toString()
             else -> value.toString()
         }
     }
@@ -314,6 +333,19 @@ class DataGenerator(private val config: PopulatorConfig) {
             return generateUserDefinedTypeValue(column)
         }
         
+        // Обработка специальных типов
+        if (column.isJsonType) {
+            return generateJsonValue(ThreadLocalRandom.current())
+        }
+        
+        if (column.isArrayType) {
+            return generateArrayValue(column, ThreadLocalRandom.current())
+        }
+        
+        if (column.isUuidType) {
+            return UUID.randomUUID()
+        }
+        
         val random = ThreadLocalRandom.current()
         
         return when (column.sqlType) {
@@ -348,8 +380,23 @@ class DataGenerator(private val config: PopulatorConfig) {
                 java.sql.Time.valueOf(String.format("%02d:%02d:%02d", 
                     random.nextInt(24), random.nextInt(60), random.nextInt(60)))
             }
+            Types.ARRAY -> {
+                generateArrayValue(column, random)
+            }
+            Types.OTHER -> {
+                // Обработка специальных типов PostgreSQL и Ignite
+                when (column.typeName.lowercase()) {
+                    "jsonb", "json" -> generateJsonValue(random)
+                    "uuid" -> UUID.randomUUID()
+                    else -> "Generated_${recordIndex}_${random.nextInt(1000)}"
+                }
+            }
             else -> {
-                "Generated_${recordIndex}_${random.nextInt(1000)}"
+                when (column.typeName.lowercase()) {
+                    "jsonb", "json" -> generateJsonValue(random)
+                    "uuid" -> UUID.randomUUID()
+                    else -> "Generated_${recordIndex}_${random.nextInt(1000)}"
+                }
             }
         }
     }
@@ -418,6 +465,91 @@ class DataGenerator(private val config: PopulatorConfig) {
     }
     
     /**
+     * Генерирует значение для JSON/JSONB колонки
+     */
+    private fun generateJsonValue(random: ThreadLocalRandom): String {
+        val jsonTypes = listOf("user_profile", "settings", "metadata", "properties")
+        val selectedType = jsonTypes.random()
+        
+        return when (selectedType) {
+            "user_profile" -> """{
+                "age": ${random.nextInt(18, 80)},
+                "interests": ["${faker.hobby().activity()}", "${faker.hobby().activity()}"],
+                "location": {
+                    "city": "${faker.address().city()}",
+                    "country": "${faker.address().country()}"
+                },
+                "is_verified": ${random.nextBoolean()}
+            }""".trimIndent()
+            
+            "settings" -> """{
+                "theme": "${listOf("dark", "light", "auto").random()}",
+                "notifications": {
+                    "email": ${random.nextBoolean()},
+                    "push": ${random.nextBoolean()}
+                },
+                "language": "${listOf("ru", "en", "de", "fr").random()}"
+            }""".trimIndent()
+            
+            "metadata" -> """{
+                "created_by": "${faker.name().username()}",
+                "tags": ["${faker.lorem().word()}", "${faker.lorem().word()}"],
+                "version": "${random.nextInt(1, 10)}.${random.nextInt(0, 10)}.${random.nextInt(0, 10)}",
+                "last_modified": "${java.time.LocalDateTime.now()}"
+            }""".trimIndent()
+            
+            else -> """{
+                "key1": "${faker.lorem().word()}",
+                "key2": ${random.nextInt(1000)},
+                "key3": ${random.nextBoolean()}
+            }""".trimIndent()
+        }
+    }
+    
+    /**
+     * Генерирует значение для массива
+     */
+    private fun generateArrayValue(column: ColumnMetadata, random: ThreadLocalRandom): String {
+        val arraySize = random.nextInt(1, 6) // От 1 до 5 элементов
+        
+        return when {
+            column.typeName.contains("text", ignoreCase = true) || 
+            column.typeName.contains("varchar", ignoreCase = true) -> {
+                val elements = (1..arraySize).map { "\"${faker.lorem().word()}\"" }
+                "{${elements.joinToString(",")}}"
+            }
+            
+            column.typeName.contains("integer", ignoreCase = true) ||
+            column.typeName.contains("int", ignoreCase = true) -> {
+                val elements = (1..arraySize).map { random.nextInt(1000) }
+                "{${elements.joinToString(",")}}"
+            }
+            
+            column.typeName.contains("boolean", ignoreCase = true) -> {
+                val elements = (1..arraySize).map { random.nextBoolean() }
+                "{${elements.joinToString(",")}}"
+            }
+            
+            column.typeName.contains("decimal", ignoreCase = true) ||
+            column.typeName.contains("numeric", ignoreCase = true) -> {
+                val elements = (1..arraySize).map { (random.nextDouble() * 1000).toBigDecimal().setScale(2) }
+                "{${elements.joinToString(",")}}"
+            }
+            
+            column.typeName.contains("uuid", ignoreCase = true) -> {
+                val elements = (1..arraySize).map { "\"${UUID.randomUUID()}\"" }
+                "{${elements.joinToString(",")}}"
+            }
+            
+            else -> {
+                // Fallback для неизвестных типов массивов
+                val elements = (1..arraySize).map { "\"element_$it\"" }
+                "{${elements.joinToString(",")}}"
+            }
+        }
+    }
+    
+    /**
      * Устанавливает значение параметра в PreparedStatement
      */
     private fun setParameterValue(stmt: java.sql.PreparedStatement, paramIndex: Int, value: Any?, column: ColumnMetadata) {
@@ -440,7 +572,24 @@ class DataGenerator(private val config: PopulatorConfig) {
             value is java.sql.Timestamp -> stmt.setTimestamp(paramIndex, value)
             value is java.sql.Time -> stmt.setTime(paramIndex, value)
             value is java.math.BigDecimal -> stmt.setBigDecimal(paramIndex, value)
-            else -> stmt.setObject(paramIndex, value)
+            value is UUID -> stmt.setObject(paramIndex, value)
+            else -> {
+                // Специальная обработка для JSONB и массивов
+                when (column.typeName.lowercase()) {
+                    "jsonb", "json" -> {
+                        // Для PostgreSQL JSONB используем setObject с типом OTHER
+                        stmt.setObject(paramIndex, value, Types.OTHER)
+                    }
+                    else -> {
+                        if (column.sqlType == Types.ARRAY || column.typeName.contains("[]")) {
+                            // Для массивов используем setObject
+                            stmt.setObject(paramIndex, value)
+                        } else {
+                            stmt.setObject(paramIndex, value)
+                        }
+                    }
+                }
+            }
         }
     }
 }

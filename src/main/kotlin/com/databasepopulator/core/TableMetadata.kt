@@ -24,7 +24,11 @@ data class ColumnMetadata(
     val defaultValue: String? = null,
     val isUserDefinedType: Boolean = false,
     val enumValues: List<String> = emptyList(),
-    val compositeTypeFields: List<CompositeTypeField> = emptyList()
+    val compositeTypeFields: List<CompositeTypeField> = emptyList(),
+    val isArrayType: Boolean = false,
+    val isJsonType: Boolean = false,
+    val isUuidType: Boolean = false,
+    val arrayElementType: String? = null
 )
 
 /**

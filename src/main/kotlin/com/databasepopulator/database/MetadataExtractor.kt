@@ -91,11 +91,21 @@ class MetadataExtractor {
             val defaultValue = columnResultSet.getString("COLUMN_DEF")
             val autoIncrement = columnResultSet.getString("IS_AUTOINCREMENT")?.equals("YES", true) ?: false
             
+            // Дополнительная информация для массивов и специальных типов
+            val isArrayType = typeName.contains("[]") || sqlType == Types.ARRAY
+            val isJsonType = typeName.lowercase() in listOf("json", "jsonb")
+            val isUuidType = typeName.lowercase() == "uuid"
+            
             // Проверяем, является ли тип пользовательским
             val userDefinedType = userDefinedTypes[typeName]
             val isUserDefinedType = userDefinedType != null
             val enumValues = userDefinedType?.enumValues ?: emptyList()
             val compositeTypeFields = userDefinedType?.compositeFields ?: emptyList()
+            
+            // Определяем тип элемента для массивов
+            val arrayElementType = if (isArrayType) {
+                typeName.replace("[]", "").replace("_", "")
+            } else null
             
             columns.add(ColumnMetadata(
                 name = columnName,
@@ -107,7 +117,11 @@ class MetadataExtractor {
                 defaultValue = defaultValue,
                 isUserDefinedType = isUserDefinedType,
                 enumValues = enumValues,
-                compositeTypeFields = compositeTypeFields
+                compositeTypeFields = compositeTypeFields,
+                isArrayType = isArrayType,
+                isJsonType = isJsonType,
+                isUuidType = isUuidType,
+                arrayElementType = arrayElementType
             ))
         }
         
