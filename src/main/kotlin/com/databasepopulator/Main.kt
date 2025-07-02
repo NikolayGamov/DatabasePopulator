@@ -24,10 +24,11 @@ fun main() {
         val populator = DatabasePopulator(config)
         populator.populate()
         
-        println("Наполнение базы данных завершено успешно!")
+        println("\n=== Процесс завершен успешно ===")
         
     } catch (e: Exception) {
-        println("Ошибка выполнения: ${e.message}")
+        println("\n!!! ОШИБКА !!!")
+        println("Причина: ${e.message}")
         e.printStackTrace()
         exitProcess(1)
     }

@@ -7,9 +7,8 @@ package com.databasepopulator.core
 data class TableMetadata(
     val name: String,
     val columns: List<ColumnMetadata>,
-    val primaryKeys: List<String>,
-    val foreignKeys: List<ForeignKeyMetadata>,
-    val uniqueConstraints: List<List<String>>
+    val foreignKeys: List<ForeignKeyMetadata> = emptyList(),
+    val primaryKeys: List<String> = emptyList()
 )
 
 /**
@@ -17,12 +16,12 @@ data class TableMetadata(
  */
 data class ColumnMetadata(
     val name: String,
-    val type: String,
     val sqlType: Int,
+    val typeName: String,
     val size: Int,
     val nullable: Boolean,
-    val autoIncrement: Boolean,
-    val defaultValue: String?
+    val autoIncrement: Boolean = false,
+    val defaultValue: String? = null
 )
 
 /**
@@ -31,5 +30,6 @@ data class ColumnMetadata(
 data class ForeignKeyMetadata(
     val columnName: String,
     val referencedTable: String,
-    val referencedColumn: String
+    val referencedColumn: String,
+    val constraintName: String
 )

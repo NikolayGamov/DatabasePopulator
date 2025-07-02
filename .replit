@@ -20,7 +20,7 @@ pattern = "**/*.{kt,kts,java}"
 start = ["kotlin-language-server"]
 
 [workflows]
-runButton = "Build and Run"
+runButton = "Test and Run"
 
 [[workflows.workflow]]
 name = "Build and Run"
@@ -34,3 +34,16 @@ args = "./gradlew build"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "DATABASE_POPULATOR_CONFIG=./config.conf ./gradlew run"
+
+[[workflows.workflow]]
+name = "Test and Run"
+author = 44527700
+mode = "sequential"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "./gradlew build"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "./gradlew runTests"

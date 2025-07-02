@@ -9,149 +9,194 @@ import java.sql.DatabaseMetaData
 import java.sql.Types
 
 /**
- * Извлекатель метаданных из базы данных
+ * Извлекает метаданные из базы данных
  */
 class MetadataExtractor {
     
     /**
-     * Извлекает метаданные всех таблиц из базы данных
+     * Извлекает метаданные таблиц из базы данных
      */
     fun extractTableMetadata(connection: Connection, databaseName: String): List<TableMetadata> {
-        val metadata = connection.metaData
         val tables = mutableListOf<TableMetadata>()
+        val metaData = connection.metaData
         
-        // Получаем список всех таблиц
-        val tablesResultSet = metadata.getTables(null, null, "%", arrayOf("TABLE"))
+        println("Извлечение метаданных для базы данных: $databaseName")
         
-        while (tablesResultSet.next()) {
-            val tableName = tablesResultSet.getString("TABLE_NAME")
+        try {
+            // Определяем схему в зависимости от типа БД
+            val schema = when {
+                isIgniteDatabase(connection) -> "PUBLIC"
+                isPostgreSQLDatabase(connection) -> "public"
+                else -> null
+            }
             
-            // Пропускаем системные таблицы
-            if (isSystemTable(tableName)) continue
+            println("Используемая схема: $schema")
             
-            val tableMetadata = extractSingleTableMetadata(metadata, tableName)
-            tables.add(tableMetadata)
+            // Получаем список таблиц
+            val tableResultSet = metaData.getTables(null, schema, "%", arrayOf("TABLE"))
+            
+            while (tableResultSet.next()) {
+                val tableName = tableResultSet.getString("TABLE_NAME")
+                
+                // Пропускаем системные таблицы
+                if (isSystemTable(tableName, connection)) {
+                    continue
+                }
+                
+                println("Обработка таблицы: $tableName")
+                
+                // Извлекаем колонки
+                val columns = extractColumnMetadata(metaData, schema, tableName)
+                
+                // Извлекаем внешние ключи
+                val foreignKeys = extractForeignKeyMetadata(metaData, schema, tableName)
+                
+                // Извлекаем первичные ключи
+                val primaryKeys = extractPrimaryKeyMetadata(metaData, schema, tableName)
+                
+                tables.add(TableMetadata(tableName, columns, foreignKeys, primaryKeys))
+                println("Таблица $tableName: ${columns.size} колонок, ${foreignKeys.size} внешних ключей")
+            }
+            
+            tableResultSet.close()
+            
+        } catch (e: Exception) {
+            println("Ошибка при извлечении метаданных: ${e.message}")
+            e.printStackTrace()
         }
         
-        tablesResultSet.close()
         return tables
-    }
-    
-    /**
-     * Извлекает метаданные одной таблицы
-     */
-    private fun extractSingleTableMetadata(metadata: DatabaseMetaData, tableName: String): TableMetadata {
-        // Извлекаем информацию о колонках
-        val columns = extractColumnMetadata(metadata, tableName)
-        
-        // Извлекаем первичные ключи
-        val primaryKeys = extractPrimaryKeys(metadata, tableName)
-        
-        // Извлекаем внешние ключи
-        val foreignKeys = extractForeignKeys(metadata, tableName)
-        
-        // Извлекаем уникальные ограничения
-        val uniqueConstraints = extractUniqueConstraints(metadata, tableName)
-        
-        return TableMetadata(
-            name = tableName,
-            columns = columns,
-            primaryKeys = primaryKeys,
-            foreignKeys = foreignKeys,
-            uniqueConstraints = uniqueConstraints
-        )
     }
     
     /**
      * Извлекает метаданные колонок
      */
-    private fun extractColumnMetadata(metadata: DatabaseMetaData, tableName: String): List<ColumnMetadata> {
+    private fun extractColumnMetadata(metaData: DatabaseMetaData, schema: String?, tableName: String): List<ColumnMetadata> {
         val columns = mutableListOf<ColumnMetadata>()
-        val columnsResultSet = metadata.getColumns(null, null, tableName, "%")
         
-        while (columnsResultSet.next()) {
-            val column = ColumnMetadata(
-                name = columnsResultSet.getString("COLUMN_NAME"),
-                type = columnsResultSet.getString("TYPE_NAME"),
-                sqlType = columnsResultSet.getInt("DATA_TYPE"),
-                size = columnsResultSet.getInt("COLUMN_SIZE"),
-                nullable = columnsResultSet.getInt("NULLABLE") == DatabaseMetaData.columnNullable,
-                autoIncrement = columnsResultSet.getString("IS_AUTOINCREMENT") == "YES",
-                defaultValue = columnsResultSet.getString("COLUMN_DEF")
-            )
-            columns.add(column)
+        val columnResultSet = metaData.getColumns(null, schema, tableName, "%")
+        
+        while (columnResultSet.next()) {
+            val columnName = columnResultSet.getString("COLUMN_NAME")
+            val sqlType = columnResultSet.getInt("DATA_TYPE")
+            val typeName = columnResultSet.getString("TYPE_NAME")
+            val columnSize = columnResultSet.getInt("COLUMN_SIZE")
+            val nullable = columnResultSet.getInt("NULLABLE") == DatabaseMetaData.columnNullable
+            val defaultValue = columnResultSet.getString("COLUMN_DEF")
+            val autoIncrement = columnResultSet.getString("IS_AUTOINCREMENT")?.equals("YES", true) ?: false
+            
+            columns.add(ColumnMetadata(
+                name = columnName,
+                sqlType = sqlType,
+                typeName = typeName,
+                size = columnSize,
+                nullable = nullable,
+                autoIncrement = autoIncrement,
+                defaultValue = defaultValue
+            ))
         }
         
-        columnsResultSet.close()
+        columnResultSet.close()
         return columns
     }
     
     /**
-     * Извлекает первичные ключи
+     * Извлекает метаданные внешних ключей
      */
-    private fun extractPrimaryKeys(metadata: DatabaseMetaData, tableName: String): List<String> {
-        val primaryKeys = mutableListOf<String>()
-        val pkResultSet = metadata.getPrimaryKeys(null, null, tableName)
-        
-        while (pkResultSet.next()) {
-            primaryKeys.add(pkResultSet.getString("COLUMN_NAME"))
-        }
-        
-        pkResultSet.close()
-        return primaryKeys
-    }
-    
-    /**
-     * Извлекает внешние ключи
-     */
-    private fun extractForeignKeys(metadata: DatabaseMetaData, tableName: String): List<ForeignKeyMetadata> {
+    private fun extractForeignKeyMetadata(metaData: DatabaseMetaData, schema: String?, tableName: String): List<ForeignKeyMetadata> {
         val foreignKeys = mutableListOf<ForeignKeyMetadata>()
-        val fkResultSet = metadata.getImportedKeys(null, null, tableName)
         
-        while (fkResultSet.next()) {
-            val foreignKey = ForeignKeyMetadata(
-                columnName = fkResultSet.getString("FKCOLUMN_NAME"),
-                referencedTable = fkResultSet.getString("PKTABLE_NAME"),
-                referencedColumn = fkResultSet.getString("PKCOLUMN_NAME")
-            )
-            foreignKeys.add(foreignKey)
+        try {
+            val fkResultSet = metaData.getImportedKeys(null, schema, tableName)
+            
+            while (fkResultSet.next()) {
+                val columnName = fkResultSet.getString("FKCOLUMN_NAME")
+                val referencedTable = fkResultSet.getString("PKTABLE_NAME")
+                val referencedColumn = fkResultSet.getString("PKCOLUMN_NAME")
+                val constraintName = fkResultSet.getString("FK_NAME") ?: "FK_${tableName}_${columnName}"
+                
+                foreignKeys.add(ForeignKeyMetadata(
+                    columnName = columnName,
+                    referencedTable = referencedTable,
+                    referencedColumn = referencedColumn,
+                    constraintName = constraintName
+                ))
+            }
+            
+            fkResultSet.close()
+            
+        } catch (e: Exception) {
+            println("Предупреждение: не удалось извлечь внешние ключи для таблицы $tableName: ${e.message}")
         }
         
-        fkResultSet.close()
         return foreignKeys
     }
     
     /**
-     * Извлекает уникальные ограничения
+     * Извлекает метаданные первичных ключей
      */
-    private fun extractUniqueConstraints(metadata: DatabaseMetaData, tableName: String): List<List<String>> {
-        val uniqueConstraints = mutableListOf<List<String>>()
+    private fun extractPrimaryKeyMetadata(metaData: DatabaseMetaData, schema: String?, tableName: String): List<String> {
+        val primaryKeys = mutableListOf<String>()
         
         try {
-            val indexInfo = metadata.getIndexInfo(null, null, tableName, true, false)
-            val indexColumns = mutableMapOf<String, MutableList<String>>()
+            val pkResultSet = metaData.getPrimaryKeys(null, schema, tableName)
             
-            while (indexInfo.next()) {
-                val indexName = indexInfo.getString("INDEX_NAME") ?: continue
-                val columnName = indexInfo.getString("COLUMN_NAME") ?: continue
-                
-                indexColumns.getOrPut(indexName) { mutableListOf() }.add(columnName)
+            while (pkResultSet.next()) {
+                val columnName = pkResultSet.getString("COLUMN_NAME")
+                primaryKeys.add(columnName)
             }
             
-            uniqueConstraints.addAll(indexColumns.values.map { it.toList() })
-            indexInfo.close()
+            pkResultSet.close()
+            
         } catch (e: Exception) {
-            // Игнорируем ошибки извлечения индексов
+            println("Предупреждение: не удалось извлечь первичные ключи для таблицы $tableName: ${e.message}")
         }
         
-        return uniqueConstraints
+        return primaryKeys
+    }
+    
+    /**
+     * Проверяет, является ли база данных Apache Ignite
+     */
+    private fun isIgniteDatabase(connection: Connection): Boolean {
+        return try {
+            connection.metaData.databaseProductName.contains("Ignite", ignoreCase = true)
+        } catch (e: Exception) {
+            false
+        }
+    }
+    
+    /**
+     * Проверяет, является ли база данных PostgreSQL
+     */
+    private fun isPostgreSQLDatabase(connection: Connection): Boolean {
+        return try {
+            connection.metaData.databaseProductName.contains("PostgreSQL", ignoreCase = true)
+        } catch (e: Exception) {
+            false
+        }
     }
     
     /**
      * Проверяет, является ли таблица системной
      */
-    private fun isSystemTable(tableName: String): Boolean {
-        val systemPrefixes = listOf("sys", "information_schema", "pg_", "sql_")
-        return systemPrefixes.any { tableName.lowercase().startsWith(it) }
+    private fun isSystemTable(tableName: String, connection: Connection): Boolean {
+        val lowerTableName = tableName.lowercase()
+        
+        // Общие системные таблицы
+        if (lowerTableName.startsWith("sys") || 
+            lowerTableName.startsWith("information_schema") ||
+            lowerTableName.startsWith("pg_")) {
+            return true
+        }
+        
+        // Системные таблицы Ignite
+        if (isIgniteDatabase(connection)) {
+            return lowerTableName.startsWith("ignite") ||
+                   lowerTableName.contains("_key") ||
+                   lowerTableName.contains("_val")
+        }
+        
+        return false
     }
 }
