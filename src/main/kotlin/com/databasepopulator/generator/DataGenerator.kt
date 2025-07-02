@@ -1,4 +1,3 @@
-
 package com.databasepopulator.generator
 
 import com.databasepopulator.config.PopulatorConfig
@@ -24,15 +23,15 @@ import java.util.concurrent.atomic.AtomicInteger
  * Генератор синтетических данных для таблиц
  */
 class DataGenerator(private val config: PopulatorConfig) {
-    
+
     private val faker = Faker(Locale("ru"))
-    
+
     // Thread-safe кэш для значений связанных полей
     private val fieldRelationCache = ConcurrentHashMap<String, MutableList<Any>>()
-    
+
     // Счетчики для генерации уникальных значений
     private val sequenceCounters = ConcurrentHashMap<String, AtomicInteger>()
-    
+
     init {
         // Инициализируем кэш для связанных полей
         config.fieldRelations.forEach { relation ->
@@ -45,51 +44,58 @@ class DataGenerator(private val config: PopulatorConfig) {
         }
         println("Инициализирован потокобезопасный кэш для ${fieldRelationCache.size} связанных полей")
     }
-    
+
     /**
      * Наполняет таблицу синтетическими данными
      */
     fun populateTable(connection: Connection, table: TableMetadata, recordCount: Int) {
         if (recordCount <= 0) return
-        
+
         println("Генерация $recordCount записей для таблицы ${table.name} (Thread: ${Thread.currentThread().name})")
-        
+
         // Проверяем, поддерживает ли драйвер COPY
-        if (connection.isWrapperFor(BaseConnection::class.java)) {
+        if (recordCount > 1000 && supportsCopyOperations(table)) {
             populateTableWithCopy(connection, table, recordCount)
         } else {
             // Fallback на batch insert для других БД
             populateTableWithBatch(connection, table, recordCount)
         }
     }
-    
+
     /**
-     * Наполняет таблицу используя COPY (PostgreSQL)
+     * Использует COPY для быстрой вставки в PostgreSQL
      */
     private fun populateTableWithCopy(connection: Connection, table: TableMetadata, recordCount: Int) {
+        val provider = table.databaseProvider
+
+        if (provider == null || !provider.supportsCopyOperations()) {
+            throw IllegalArgumentException("БД не поддерживает COPY операции")
+        }
+
+        val copyStatement = provider.createCopyStatement(table)
+            ?: throw IllegalArgumentException("Не удалось создать COPY statement")
+
         val columns = table.columns.filter { !it.autoIncrement }
-        
+
         // Создаем CSV данные в памяти
         val csvData = StringBuilder()
-        
+
         repeat(recordCount) { recordIndex ->
             val values = mutableListOf<String>()
-            
+
             columns.forEach { column ->
                 val value = generateColumnValue(table.name, column, recordIndex)
-                values.add(formatValueForCopy(value, column))
+                val formattedValue = table.databaseProvider?.formatCopyValue(value, column) ?: formatValueForCopy(value, column)
+                values.add(formattedValue)
             }
-            
+
             csvData.append(values.joinToString("\t")).append("\n")
         }
-        
+
         // Используем COPY для вставки данных
         val copyManager = CopyManager(connection.unwrap(BaseConnection::class.java))
-        val columnNames = columns.joinToString(", ") { it.name }
-        val copyStatement = "COPY ${table.name} ($columnNames) FROM STDIN WITH (FORMAT CSV, DELIMITER E'\\t', NULL 'NULL')"
-        
         val reader = StringReader(csvData.toString())
-        
+
         try {
             val rowsInserted = copyManager.copyIn(copyStatement, reader)
             println("Вставлено $rowsInserted записей через COPY в таблицу ${table.name}")
@@ -100,27 +106,27 @@ class DataGenerator(private val config: PopulatorConfig) {
             throw e
         }
     }
-    
+
     /**
      * Наполняет таблицу используя batch insert (fallback)
      */
     private fun populateTableWithBatch(connection: Connection, table: TableMetadata, recordCount: Int) {
         println("Используется batch insert для таблицы ${table.name} (COPY недоступен)")
-        
+
         // Подготавливаем SQL для вставки
         val insertSql = buildInsertStatement(table)
         val preparedStatement = connection.prepareStatement(insertSql)
-        
+
         try {
             val batchSize = 1000
             var currentBatch = 0
-            
+
             repeat(recordCount) { recordIndex ->
                 // Генерируем данные для записи
                 generateRecordData(preparedStatement, table, recordIndex)
                 preparedStatement.addBatch()
                 currentBatch++
-                
+
                 // Выполняем batch когда достигаем размера пакета
                 if (currentBatch >= batchSize) {
                     preparedStatement.executeBatch()
@@ -128,18 +134,18 @@ class DataGenerator(private val config: PopulatorConfig) {
                     currentBatch = 0
                 }
             }
-            
+
             // Выполняем оставшиеся записи
             if (currentBatch > 0) {
                 preparedStatement.executeBatch()
                 connection.commit()
             }
-            
+
         } finally {
             preparedStatement.close()
         }
     }
-    
+
     /**
      * Форматирует значение для COPY команды
      */
@@ -151,9 +157,9 @@ class DataGenerator(private val config: PopulatorConfig) {
                     "jsonb", "json" -> {
                         // Для JSON экранируем кавычки и переносы строк
                         value.replace("\"", "\\\"")
-                             .replace("\t", "\\t")
-                             .replace("\n", "\\n")
-                             .replace("\r", "\\r")
+                            .replace("\t", "\\t")
+                            .replace("\n", "\\n")
+                            .replace("\r", "\\r")
                     }
                     else -> {
                         if (column.sqlType == Types.ARRAY || column.typeName.contains("[]")) {
@@ -170,7 +176,7 @@ class DataGenerator(private val config: PopulatorConfig) {
             else -> value.toString()
         }
     }
-    
+
     /**
      * Строит SQL INSERT statement для таблицы
      */
@@ -178,48 +184,48 @@ class DataGenerator(private val config: PopulatorConfig) {
         val columns = table.columns.filter { !it.autoIncrement }
         val columnNames = columns.joinToString(", ") { it.name }
         val placeholders = columns.joinToString(", ") { "?" }
-        
+
         return "INSERT INTO ${table.name} ($columnNames) VALUES ($placeholders)"
     }
-    
+
     /**
      * Генерирует данные для одной записи (для batch insert)
      */
     private fun generateRecordData(stmt: java.sql.PreparedStatement, table: TableMetadata, recordIndex: Int) {
         val columns = table.columns.filter { !it.autoIncrement }
-        
+
         columns.forEachIndexed { index, column ->
             val value = generateColumnValue(table.name, column, recordIndex)
             setParameterValue(stmt, index + 1, value, column)
         }
     }
-    
+
     /**
      * Генерирует значение для конкретной колонки (thread-safe)
      */
     private fun generateColumnValue(tableName: String, column: ColumnMetadata, recordIndex: Int): Any? {
         val fieldKey = "$tableName.${column.name}"
-        
+
         // Проверяем, есть ли связь с другими полями
         val fieldRelation = config.fieldRelations.find { relation ->
             relation.sourceFields.contains(fieldKey) || relation.targetFields.contains(fieldKey)
         }
-        
+
         if (fieldRelation != null) {
             return generateRelatedValue(fieldKey, fieldRelation, column, recordIndex)
         }
-        
+
         // Проверяем, есть ли специальное правило генерации
         val generationRule = config.generationRules[fieldKey]
-        
+
         if (generationRule != null) {
             return generateValueByRule(generationRule, column)
         }
-        
+
         // Генерируем значение по типу данных
         return generateValueByType(column, recordIndex)
     }
-    
+
     /**
      * Генерирует значение для связанного поля (thread-safe)
      */
@@ -229,7 +235,7 @@ class DataGenerator(private val config: PopulatorConfig) {
                 // Для SAME_VALUES используем общий пул значений
                 val sourceField = relation.sourceFields.first()
                 val cache = fieldRelationCache[sourceField]
-                
+
                 return if (cache != null && cache.isNotEmpty() && ThreadLocalRandom.current().nextDouble() < 0.8) {
                     // 80% шанс использовать существующее значение (thread-safe)
                     synchronized(cache) {
@@ -258,11 +264,11 @@ class DataGenerator(private val config: PopulatorConfig) {
                     newValue
                 }
             }
-            
+
             RelationType.DISJOINT_UNION -> {
                 // Для DISJOINT_UNION каждое поле имеет свой набор значений
                 val cache = fieldRelationCache[fieldKey]
-                
+
                 return if (cache != null && cache.isNotEmpty() && ThreadLocalRandom.current().nextDouble() < 0.7) {
                     // 70% шанс использовать существующее значение (thread-safe)
                     synchronized(cache) {
@@ -281,7 +287,7 @@ class DataGenerator(private val config: PopulatorConfig) {
             }
         }
     }
-    
+
     /**
      * Генерирует новое значение для связанного поля
      */
@@ -290,14 +296,14 @@ class DataGenerator(private val config: PopulatorConfig) {
         val generationRule = config.generationRules.values.find { rule ->
             rule.type.lowercase() in listOf("uuid", "email", "name", "phone")
         }
-        
+
         return if (generationRule != null) {
             generateValueByRule(generationRule, column)
         } else {
             generateValueByType(column, recordIndex)
         }
     }
-    
+
     /**
      * Генерирует значение по правилу из конфигурации (thread-safe)
      */
@@ -329,7 +335,7 @@ class DataGenerator(private val config: PopulatorConfig) {
             else -> generateValueByType(column, 0)
         }
     }
-    
+
     /**
      * Генерирует значение по regex-паттерну используя библиотеку Generex
      */
@@ -337,7 +343,7 @@ class DataGenerator(private val config: PopulatorConfig) {
         return try {
             val generex = Generex(pattern)
             val value = generex.random()
-            
+
             // Проверяем ограничения по длине колонки
             if (column.size > 0 && value.length > column.size) {
                 value.take(column.size)
@@ -350,7 +356,7 @@ class DataGenerator(private val config: PopulatorConfig) {
             generateValueByType(column, 0)
         }
     }
-    
+
     /**
      * Генерирует значение по типу данных колонки (thread-safe)
      */
@@ -358,27 +364,27 @@ class DataGenerator(private val config: PopulatorConfig) {
         if (column.nullable && ThreadLocalRandom.current().nextDouble() < 0.1) {
             return null // 10% шанс на null для nullable колонок
         }
-        
+
         // Обработка пользовательских типов
         if (column.isUserDefinedType) {
             return generateUserDefinedTypeValue(column)
         }
-        
+
         // Обработка специальных типов
         if (column.isJsonType) {
             return generateJsonValue(ThreadLocalRandom.current())
         }
-        
+
         if (column.isArrayType) {
             return generateArrayValue(column, ThreadLocalRandom.current())
         }
-        
+
         if (column.isUuidType) {
             return UUID.randomUUID()
         }
-        
+
         val random = ThreadLocalRandom.current()
-        
+
         return when (column.sqlType) {
             Types.VARCHAR, Types.CHAR, Types.LONGVARCHAR, Types.NVARCHAR, Types.NCHAR -> {
                 generateStringValue(column)
@@ -408,7 +414,7 @@ class DataGenerator(private val config: PopulatorConfig) {
                 java.sql.Timestamp.valueOf(LocalDateTime.now().minusDays(random.nextLong(365)))
             }
             Types.TIME -> {
-                java.sql.Time.valueOf(String.format("%02d:%02d:%02d", 
+                java.sql.Time.valueOf(String.format("%02d:%02d:%02d",
                     random.nextInt(24), random.nextInt(60), random.nextInt(60)))
             }
             Types.ARRAY -> {
@@ -431,13 +437,13 @@ class DataGenerator(private val config: PopulatorConfig) {
             }
         }
     }
-    
+
     /**
      * Генерирует строковое значение
      */
     private fun generateStringValue(column: ColumnMetadata): String {
         val maxLength = minOf(column.size, 255)
-        
+
         return when {
             column.name.contains("email", ignoreCase = true) -> faker.internet().emailAddress()
             column.name.contains("name", ignoreCase = true) -> faker.name().fullName()
@@ -448,7 +454,7 @@ class DataGenerator(private val config: PopulatorConfig) {
             else -> faker.lorem().characters(ThreadLocalRandom.current().nextInt(maxLength) + 1)
         }.take(maxLength)
     }
-    
+
     /**
      * Генерирует значение для пользовательского типа
      */
@@ -458,12 +464,12 @@ class DataGenerator(private val config: PopulatorConfig) {
             column.enumValues.isNotEmpty() -> {
                 column.enumValues.random()
             }
-            
+
             // Составной тип
             column.compositeTypeFields.isNotEmpty() -> {
                 generateCompositeTypeValue(column.compositeTypeFields)
             }
-            
+
             else -> {
                 // Fallback для неизвестных пользовательских типов
                 println("Предупреждение: неизвестный пользовательский тип ${column.typeName}")
@@ -471,13 +477,13 @@ class DataGenerator(private val config: PopulatorConfig) {
             }
         }
     }
-    
+
     /**
      * Генерирует значение для составного типа
      */
     private fun generateCompositeTypeValue(fields: List<CompositeTypeField>): String {
         val random = ThreadLocalRandom.current()
-        
+
         val values = fields.map { field ->
             when (field.typeName.lowercase()) {
                 "text", "varchar", "char" -> "\"${faker.lorem().word()}\""
@@ -490,18 +496,18 @@ class DataGenerator(private val config: PopulatorConfig) {
                 else -> "\"${faker.lorem().word()}\""
             }
         }
-        
+
         // Возвращаем в формате PostgreSQL ROW constructor
         return "(${values.joinToString(",")})"
     }
-    
+
     /**
      * Генерирует значение для JSON/JSONB колонки
      */
     private fun generateJsonValue(random: ThreadLocalRandom): String {
         val jsonTypes = listOf("user_profile", "settings", "metadata", "properties")
         val selectedType = jsonTypes.random()
-        
+
         return when (selectedType) {
             "user_profile" -> """{
                 "age": ${random.nextInt(18, 80)},
@@ -512,7 +518,7 @@ class DataGenerator(private val config: PopulatorConfig) {
                 },
                 "is_verified": ${random.nextBoolean()}
             }""".trimIndent()
-            
+
             "settings" -> """{
                 "theme": "${listOf("dark", "light", "auto").random()}",
                 "notifications": {
@@ -521,14 +527,14 @@ class DataGenerator(private val config: PopulatorConfig) {
                 },
                 "language": "${listOf("ru", "en", "de", "fr").random()}"
             }""".trimIndent()
-            
+
             "metadata" -> """{
                 "created_by": "${faker.name().username()}",
                 "tags": ["${faker.lorem().word()}", "${faker.lorem().word()}"],
                 "version": "${random.nextInt(1, 10)}.${random.nextInt(0, 10)}.${random.nextInt(0, 10)}",
                 "last_modified": "${java.time.LocalDateTime.now()}"
             }""".trimIndent()
-            
+
             else -> """{
                 "key1": "${faker.lorem().word()}",
                 "key2": ${random.nextInt(1000)},
@@ -536,42 +542,42 @@ class DataGenerator(private val config: PopulatorConfig) {
             }""".trimIndent()
         }
     }
-    
+
     /**
      * Генерирует значение для массива
      */
     private fun generateArrayValue(column: ColumnMetadata, random: ThreadLocalRandom): String {
         val arraySize = random.nextInt(1, 6) // От 1 до 5 элементов
-        
+
         return when {
-            column.typeName.contains("text", ignoreCase = true) || 
+            column.typeName.contains("text", ignoreCase = true) ||
             column.typeName.contains("varchar", ignoreCase = true) -> {
                 val elements = (1..arraySize).map { "\"${faker.lorem().word()}\"" }
                 "{${elements.joinToString(",")}}"
             }
-            
+
             column.typeName.contains("integer", ignoreCase = true) ||
             column.typeName.contains("int", ignoreCase = true) -> {
                 val elements = (1..arraySize).map { random.nextInt(1000) }
                 "{${elements.joinToString(",")}}"
             }
-            
+
             column.typeName.contains("boolean", ignoreCase = true) -> {
                 val elements = (1..arraySize).map { random.nextBoolean() }
                 "{${elements.joinToString(",")}}"
             }
-            
+
             column.typeName.contains("decimal", ignoreCase = true) ||
             column.typeName.contains("numeric", ignoreCase = true) -> {
                 val elements = (1..arraySize).map { (random.nextDouble() * 1000).toBigDecimal().setScale(2) }
                 "{${elements.joinToString(",")}}"
             }
-            
+
             column.typeName.contains("uuid", ignoreCase = true) -> {
                 val elements = (1..arraySize).map { "\"${UUID.randomUUID()}\"" }
                 "{${elements.joinToString(",")}}"
             }
-            
+
             else -> {
                 // Fallback для неизвестных типов массивов
                 val elements = (1..arraySize).map { "\"element_$it\"" }
@@ -579,7 +585,7 @@ class DataGenerator(private val config: PopulatorConfig) {
             }
         }
     }
-    
+
     /**
      * Устанавливает значение параметра в PreparedStatement
      */
@@ -622,5 +628,12 @@ class DataGenerator(private val config: PopulatorConfig) {
                 }
             }
         }
+    }
+
+    /**
+     * Проверяет, поддерживает ли БД COPY операции
+     */
+    private fun supportsCopyOperations(table: TableMetadata): Boolean {
+        return table.databaseProvider?.supportsCopyOperations() ?: false
     }
 }

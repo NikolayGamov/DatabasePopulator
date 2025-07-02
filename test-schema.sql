@@ -62,15 +62,40 @@ CREATE TABLE IF NOT EXISTS array_tests (
 );
 
 -- Apache Ignite test schema (создается через код)
+-- Ignite поддерживает следующие таблицы:
+
 -- CREATE TABLE cache_users (
 --     user_id UUID PRIMARY KEY,
 --     email VARCHAR(100),
+--     full_name VARCHAR(100),
 --     cache_data VARCHAR(1000), -- для JSON данных в Ignite
---     tags VARCHAR(500) -- для массивов в виде строки в Igniteull_name VARCHAR(100),
---     last_login TIMESTAMP
--- ) WITH "template=replicated";
+--     tags VARCHAR(500), -- для массивов в виде строки в Ignite
+--     metadata VARCHAR(2000), -- дополнительные JSON метаданные
+--     last_login TIMESTAMP,
+--     is_active BOOLEAN DEFAULT true,
+--     login_count INTEGER DEFAULT 0
+-- ) WITH "template=replicated,cache_name=cache_users";
 
 -- CREATE TABLE cache_sessions (
+--     session_id UUID PRIMARY KEY,
+--     user_id UUID,
+--     session_data VARCHAR(2000), -- JSON данные сессии
+--     ip_address VARCHAR(45),
+--     user_agent VARCHAR(500),
+--     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+--     expires_at TIMESTAMP,
+--     is_valid BOOLEAN DEFAULT true
+-- ) WITH "template=partitioned,cache_name=cache_sessions,backups=1";
+
+-- CREATE TABLE cache_analytics (
+--     event_id UUID PRIMARY KEY,
+--     user_id UUID,
+--     event_type VARCHAR(50),
+--     event_data VARCHAR(5000), -- JSON данные события
+--     tags VARCHAR(1000), -- массив тегов как строка
+--     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+--     processed BOOLEAN DEFAULT false
+-- ) WITH "template=partitioned,cache_name=cache_analytics,backups=2";ns (
 --     session_id UUID PRIMARY KEY,
 --     user_id UUID,
 --     created_at TIMESTAMP,

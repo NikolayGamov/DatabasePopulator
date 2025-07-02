@@ -1,4 +1,3 @@
-
 package com.databasepopulator.core
 
 /**
@@ -7,8 +6,9 @@ package com.databasepopulator.core
 data class TableMetadata(
     val name: String,
     val columns: List<ColumnMetadata>,
-    val foreignKeys: List<ForeignKeyMetadata> = emptyList(),
-    val primaryKeys: List<String> = emptyList()
+    val foreignKeys: List<ForeignKeyMetadata>,
+    val primaryKeys: List<String>,
+    val databaseProvider: com.databasepopulator.database.DatabaseProvider? = null
 )
 
 /**

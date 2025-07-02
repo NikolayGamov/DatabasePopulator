@@ -47,3 +47,20 @@ args = "./gradlew build"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "./gradlew runTests"
+
+[[workflows.workflow]]
+name = "Test Database Providers"
+author = 44527700
+mode = "sequential"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "./gradlew build"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "./gradlew runTests"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "echo \"Тестирование завершено. Проверка новой архитектуры провайдеров БД.\""
