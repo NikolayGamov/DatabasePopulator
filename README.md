@@ -114,8 +114,26 @@ generationRules = [
 - `databaseName` - имя базы данных
 - `tableName` - имя таблицы
 - `columnName` - имя колонки
-- `type` - тип генератора (email, name, phone, uuid, constant, etc.)
+- `type` - тип генератора (email, name, phone, uuid, constant, regex, etc.)
 - `parameters` - дополнительные параметры
+
+##### Поддерживаемые типы генераторов:
+- `email` - генерация email адресов
+- `name` - полное имя
+- `firstname` - имя
+- `lastname` - фамилия
+- `phone` - номер телефона
+- `address` - адрес
+- `company` - название компании
+- `uuid` - UUID строка
+- `constant` - константное значение (параметр: `value`)
+- `sequence` - последовательность чисел (параметр: `start`)
+- `regex` - генерация по regex-паттерну (параметр: `pattern`)
+
+##### Примеры regex-паттернов:
+- `[A-Z]{2,3}-[0-9]{4,6}` - код продукта (AB-1234, XYZ-567890)
+- `[a-z]{3,8}[0-9]{2,4}` - имя пользователя (user123, admin9999)
+- `TRK[0-9]{10}` - номер отслеживания (TRK1234567890)
 
 #### Field Relations
 - `type` - тип связи (SAME_VALUES, DISJOINT_UNION)

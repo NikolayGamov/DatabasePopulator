@@ -26,6 +26,7 @@ dependencies {
     
     // Data generation
     implementation("com.github.javafaker:javafaker:1.0.2")
+    implementation("com.github.mifmif:generex:1.0.2")
     
     // Logging
     implementation("ch.qos.logback:logback-classic:1.4.11")

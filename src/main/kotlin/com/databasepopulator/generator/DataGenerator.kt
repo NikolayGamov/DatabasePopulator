@@ -7,6 +7,7 @@ import com.databasepopulator.core.TableMetadata
 import com.databasepopulator.core.UserDefinedType
 import com.databasepopulator.core.CompositeTypeField
 import com.github.javafaker.Faker
+import com.mifmif.common.regex.Generex
 import org.postgresql.copy.CopyManager
 import org.postgresql.core.BaseConnection
 import java.io.StringReader
@@ -316,7 +317,37 @@ class DataGenerator(private val config: PopulatorConfig) {
                 val counter = sequenceCounters.computeIfAbsent("${rule.type}_${start}") { AtomicInteger(start) }
                 counter.getAndIncrement()
             }
+            "regex" -> {
+                val pattern = rule.parameters["pattern"]
+                if (pattern != null) {
+                    generateValueByRegex(pattern, column)
+                } else {
+                    println("Предупреждение: не указан параметр 'pattern' для regex правила")
+                    generateValueByType(column, 0)
+                }
+            }
             else -> generateValueByType(column, 0)
+        }
+    }
+    
+    /**
+     * Генерирует значение по regex-паттерну используя библиотеку Generex
+     */
+    private fun generateValueByRegex(pattern: String, column: ColumnMetadata): Any? {
+        return try {
+            val generex = Generex(pattern)
+            val value = generex.random()
+            
+            // Проверяем ограничения по длине колонки
+            if (column.size > 0 && value.length > column.size) {
+                value.take(column.size)
+            } else {
+                value
+            }
+        } catch (e: Exception) {
+            println("Ошибка генерации по regex '$pattern': ${e.message}")
+            // Fallback на обычную генерацию
+            generateValueByType(column, 0)
         }
     }
     
