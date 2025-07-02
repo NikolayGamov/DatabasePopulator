@@ -1,4 +1,3 @@
-
 plugins {
     kotlin("jvm") version "1.9.20"
     application
@@ -19,7 +18,7 @@ dependencies {
     implementation("org.apache.ignite:ignite-indexing:2.15.0")
     implementation("com.github.javafaker:javafaker:1.0.2")
     implementation("org.slf4j:slf4j-simple:2.0.9")
-    
+
     testImplementation("org.jetbrains.kotlin:kotlin-test")
     testImplementation("junit:junit:4.13.2")
 }

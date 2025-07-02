@@ -5,8 +5,10 @@ import com.databasepopulator.config.PopulatorConfig
 import com.databasepopulator.core.ColumnMetadata
 import com.databasepopulator.core.TableMetadata
 import com.github.javafaker.Faker
+import org.postgresql.copy.CopyManager
+import org.postgresql.core.BaseConnection
+import java.io.StringReader
 import java.sql.Connection
-import java.sql.PreparedStatement
 import java.sql.Types
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -25,6 +27,61 @@ class DataGenerator(private val config: PopulatorConfig) {
      */
     fun populateTable(connection: Connection, table: TableMetadata, recordCount: Int) {
         if (recordCount <= 0) return
+        
+        println("Генерация $recordCount записей для таблицы ${table.name}...")
+        
+        // Проверяем, поддерживает ли драйвер COPY
+        if (connection.isWrapperFor(BaseConnection::class.java)) {
+            populateTableWithCopy(connection, table, recordCount)
+        } else {
+            // Fallback на batch insert для других БД
+            populateTableWithBatch(connection, table, recordCount)
+        }
+    }
+    
+    /**
+     * Наполняет таблицу используя COPY (PostgreSQL)
+     */
+    private fun populateTableWithCopy(connection: Connection, table: TableMetadata, recordCount: Int) {
+        val columns = table.columns.filter { !it.autoIncrement }
+        
+        // Создаем CSV данные в памяти
+        val csvData = StringBuilder()
+        
+        repeat(recordCount) { recordIndex ->
+            val values = mutableListOf<String>()
+            
+            columns.forEach { column ->
+                val value = generateColumnValue(table.name, column, recordIndex)
+                values.add(formatValueForCopy(value, column))
+            }
+            
+            csvData.append(values.joinToString("\t")).append("\n")
+        }
+        
+        // Используем COPY для вставки данных
+        val copyManager = CopyManager(connection.unwrap(BaseConnection::class.java))
+        val columnNames = columns.joinToString(", ") { it.name }
+        val copyStatement = "COPY ${table.name} ($columnNames) FROM STDIN WITH (FORMAT CSV, DELIMITER E'\\t', NULL 'NULL')"
+        
+        val reader = StringReader(csvData.toString())
+        
+        try {
+            val rowsInserted = copyManager.copyIn(copyStatement, reader)
+            println("Вставлено $rowsInserted записей через COPY")
+            connection.commit()
+        } catch (e: Exception) {
+            println("Ошибка при COPY операции: ${e.message}")
+            connection.rollback()
+            throw e
+        }
+    }
+    
+    /**
+     * Наполняет таблицу используя batch insert (fallback)
+     */
+    private fun populateTableWithBatch(connection: Connection, table: TableMetadata, recordCount: Int) {
+        println("Используется batch insert (COPY недоступен)")
         
         // Подготавливаем SQL для вставки
         val insertSql = buildInsertStatement(table)
@@ -60,6 +117,18 @@ class DataGenerator(private val config: PopulatorConfig) {
     }
     
     /**
+     * Форматирует значение для COPY команды
+     */
+    private fun formatValueForCopy(value: Any?, column: ColumnMetadata): String {
+        return when {
+            value == null -> "NULL"
+            value is String -> value.replace("\t", "\\t").replace("\n", "\\n").replace("\r", "\\r")
+            value is Boolean -> if (value) "t" else "f"
+            else -> value.toString()
+        }
+    }
+    
+    /**
      * Строит SQL INSERT statement для таблицы
      */
     private fun buildInsertStatement(table: TableMetadata): String {
@@ -71,9 +140,9 @@ class DataGenerator(private val config: PopulatorConfig) {
     }
     
     /**
-     * Генерирует данные для одной записи
+     * Генерирует данные для одной записи (для batch insert)
      */
-    private fun generateRecordData(stmt: PreparedStatement, table: TableMetadata, recordIndex: Int) {
+    private fun generateRecordData(stmt: java.sql.PreparedStatement, table: TableMetadata, recordIndex: Int) {
         val columns = table.columns.filter { !it.autoIncrement }
         
         columns.forEachIndexed { index, column ->
@@ -185,7 +254,7 @@ class DataGenerator(private val config: PopulatorConfig) {
     /**
      * Устанавливает значение параметра в PreparedStatement
      */
-    private fun setParameterValue(stmt: PreparedStatement, paramIndex: Int, value: Any?, column: ColumnMetadata) {
+    private fun setParameterValue(stmt: java.sql.PreparedStatement, paramIndex: Int, value: Any?, column: ColumnMetadata) {
         when {
             value == null -> stmt.setNull(paramIndex, column.sqlType)
             value is String -> stmt.setString(paramIndex, value)
