@@ -15,6 +15,9 @@ import java.sql.Types
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.util.*
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ThreadLocalRandom
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Генератор синтетических данных для таблиц
@@ -22,22 +25,24 @@ import java.util.*
 class DataGenerator(private val config: PopulatorConfig) {
     
     private val faker = Faker(Locale("ru"))
-    private val random = Random()
     
-    // Кэш для значений связанных полей
-    private val fieldRelationCache = mutableMapOf<String, MutableList<Any>>()
+    // Thread-safe кэш для значений связанных полей
+    private val fieldRelationCache = ConcurrentHashMap<String, MutableList<Any>>()
+    
+    // Счетчики для генерации уникальных значений
+    private val sequenceCounters = ConcurrentHashMap<String, AtomicInteger>()
     
     init {
         // Инициализируем кэш для связанных полей
         config.fieldRelations.forEach { relation ->
             relation.sourceFields.forEach { field ->
-                fieldRelationCache[field] = mutableListOf()
+                fieldRelationCache[field] = Collections.synchronizedList(mutableListOf())
             }
             relation.targetFields.forEach { field ->
-                fieldRelationCache[field] = mutableListOf()
+                fieldRelationCache[field] = Collections.synchronizedList(mutableListOf())
             }
         }
-        println("Инициализирован кэш для ${fieldRelationCache.size} связанных полей")
+        println("Инициализирован потокобезопасный кэш для ${fieldRelationCache.size} связанных полей")
     }
     
     /**
@@ -46,7 +51,7 @@ class DataGenerator(private val config: PopulatorConfig) {
     fun populateTable(connection: Connection, table: TableMetadata, recordCount: Int) {
         if (recordCount <= 0) return
         
-        println("Генерация $recordCount записей для таблицы ${table.name}...")
+        println("Генерация $recordCount записей для таблицы ${table.name} (Thread: ${Thread.currentThread().name})")
         
         // Проверяем, поддерживает ли драйвер COPY
         if (connection.isWrapperFor(BaseConnection::class.java)) {
@@ -86,10 +91,10 @@ class DataGenerator(private val config: PopulatorConfig) {
         
         try {
             val rowsInserted = copyManager.copyIn(copyStatement, reader)
-            println("Вставлено $rowsInserted записей через COPY")
+            println("Вставлено $rowsInserted записей через COPY в таблицу ${table.name}")
             connection.commit()
         } catch (e: Exception) {
-            println("Ошибка при COPY операции: ${e.message}")
+            println("Ошибка при COPY операции для таблицы ${table.name}: ${e.message}")
             connection.rollback()
             throw e
         }
@@ -99,7 +104,7 @@ class DataGenerator(private val config: PopulatorConfig) {
      * Наполняет таблицу используя batch insert (fallback)
      */
     private fun populateTableWithBatch(connection: Connection, table: TableMetadata, recordCount: Int) {
-        println("Используется batch insert (COPY недоступен)")
+        println("Используется batch insert для таблицы ${table.name} (COPY недоступен)")
         
         // Подготавливаем SQL для вставки
         val insertSql = buildInsertStatement(table)
@@ -170,7 +175,7 @@ class DataGenerator(private val config: PopulatorConfig) {
     }
     
     /**
-     * Генерирует значение для конкретной колонки
+     * Генерирует значение для конкретной колонки (thread-safe)
      */
     private fun generateColumnValue(tableName: String, column: ColumnMetadata, recordIndex: Int): Any? {
         val fieldKey = "$tableName.${column.name}"
@@ -196,28 +201,38 @@ class DataGenerator(private val config: PopulatorConfig) {
     }
     
     /**
-     * Генерирует значение для связанного поля
+     * Генерирует значение для связанного поля (thread-safe)
      */
     private fun generateRelatedValue(fieldKey: String, relation: FieldRelation, column: ColumnMetadata, recordIndex: Int): Any? {
         when (relation.type) {
             RelationType.SAME_VALUES -> {
                 // Для SAME_VALUES используем общий пул значений
                 val sourceField = relation.sourceFields.first()
-                val cache = fieldRelationCache[sourceField] ?: mutableListOf()
+                val cache = fieldRelationCache[sourceField]
                 
-                return if (cache.isNotEmpty() && random.nextDouble() < 0.8) {
-                    // 80% шанс использовать существующее значение
-                    cache.random()
+                return if (cache != null && cache.isNotEmpty() && ThreadLocalRandom.current().nextDouble() < 0.8) {
+                    // 80% шанс использовать существующее значение (thread-safe)
+                    synchronized(cache) {
+                        if (cache.isNotEmpty()) cache.random() else null
+                    }
                 } else {
                     // 20% шанс сгенерировать новое значение
                     val newValue = generateNewValueForRelation(column, recordIndex)
                     if (newValue != null) {
-                        // Добавляем значение во все связанные кэши
+                        // Добавляем значение во все связанные кэши (thread-safe)
                         relation.sourceFields.forEach { field ->
-                            fieldRelationCache[field]?.add(newValue)
+                            fieldRelationCache[field]?.let { fieldCache ->
+                                synchronized(fieldCache) {
+                                    fieldCache.add(newValue)
+                                }
+                            }
                         }
                         relation.targetFields.forEach { field ->
-                            fieldRelationCache[field]?.add(newValue)
+                            fieldRelationCache[field]?.let { fieldCache ->
+                                synchronized(fieldCache) {
+                                    fieldCache.add(newValue)
+                                }
+                            }
                         }
                     }
                     newValue
@@ -226,16 +241,20 @@ class DataGenerator(private val config: PopulatorConfig) {
             
             RelationType.DISJOINT_UNION -> {
                 // Для DISJOINT_UNION каждое поле имеет свой набор значений
-                val cache = fieldRelationCache[fieldKey] ?: mutableListOf()
+                val cache = fieldRelationCache[fieldKey]
                 
-                return if (cache.isNotEmpty() && random.nextDouble() < 0.7) {
-                    // 70% шанс использовать существующее значение
-                    cache.random()
+                return if (cache != null && cache.isNotEmpty() && ThreadLocalRandom.current().nextDouble() < 0.7) {
+                    // 70% шанс использовать существующее значение (thread-safe)
+                    synchronized(cache) {
+                        if (cache.isNotEmpty()) cache.random() else null
+                    }
                 } else {
                     // 30% шанс сгенерировать новое значение
                     val newValue = generateNewValueForRelation(column, recordIndex)
-                    if (newValue != null) {
-                        cache.add(newValue)
+                    if (newValue != null && cache != null) {
+                        synchronized(cache) {
+                            cache.add(newValue)
+                        }
                     }
                     newValue
                 }
@@ -260,7 +279,7 @@ class DataGenerator(private val config: PopulatorConfig) {
     }
     
     /**
-     * Генерирует значение по правилу из конфигурации
+     * Генерирует значение по правилу из конфигурации (thread-safe)
      */
     private fun generateValueByRule(rule: com.databasepopulator.config.GenerationRule, column: ColumnMetadata): Any? {
         return when (rule.type.lowercase()) {
@@ -273,18 +292,20 @@ class DataGenerator(private val config: PopulatorConfig) {
             "company" -> faker.company().name()
             "uuid" -> UUID.randomUUID().toString()
             "constant" -> rule.parameters["value"]
-            "sequence" -> rule.parameters["start"]?.toIntOrNull()?.let { start ->
-                start + random.nextInt(1000000)
+            "sequence" -> {
+                val start = rule.parameters["start"]?.toIntOrNull() ?: 1
+                val counter = sequenceCounters.computeIfAbsent("${rule.type}_${start}") { AtomicInteger(start) }
+                counter.getAndIncrement()
             }
             else -> generateValueByType(column, 0)
         }
     }
     
     /**
-     * Генерирует значение по типу данных колонки
+     * Генерирует значение по типу данных колонки (thread-safe)
      */
     private fun generateValueByType(column: ColumnMetadata, recordIndex: Int): Any? {
-        if (column.nullable && random.nextDouble() < 0.1) {
+        if (column.nullable && ThreadLocalRandom.current().nextDouble() < 0.1) {
             return null // 10% шанс на null для nullable колонок
         }
         
@@ -292,6 +313,8 @@ class DataGenerator(private val config: PopulatorConfig) {
         if (column.isUserDefinedType) {
             return generateUserDefinedTypeValue(column)
         }
+        
+        val random = ThreadLocalRandom.current()
         
         return when (column.sqlType) {
             Types.VARCHAR, Types.CHAR, Types.LONGVARCHAR, Types.NVARCHAR, Types.NCHAR -> {
@@ -301,7 +324,7 @@ class DataGenerator(private val config: PopulatorConfig) {
                 random.nextInt(100000)
             }
             Types.BIGINT -> {
-                random.nextLong().coerceIn(0, Long.MAX_VALUE / 2)
+                random.nextLong(0, Long.MAX_VALUE / 2)
             }
             Types.DECIMAL, Types.NUMERIC -> {
                 (random.nextDouble() * 10000).toBigDecimal()
@@ -326,7 +349,7 @@ class DataGenerator(private val config: PopulatorConfig) {
                     random.nextInt(24), random.nextInt(60), random.nextInt(60)))
             }
             else -> {
-                "Generated_${recordIndex}"
+                "Generated_${recordIndex}_${random.nextInt(1000)}"
             }
         }
     }
@@ -344,7 +367,7 @@ class DataGenerator(private val config: PopulatorConfig) {
             column.name.contains("address", ignoreCase = true) -> faker.address().streetAddress()
             column.name.contains("city", ignoreCase = true) -> faker.address().city()
             column.name.contains("company", ignoreCase = true) -> faker.company().name()
-            else -> faker.lorem().characters(random.nextInt(maxLength) + 1)
+            else -> faker.lorem().characters(ThreadLocalRandom.current().nextInt(maxLength) + 1)
         }.take(maxLength)
     }
     
@@ -366,7 +389,7 @@ class DataGenerator(private val config: PopulatorConfig) {
             else -> {
                 // Fallback для неизвестных пользовательских типов
                 println("Предупреждение: неизвестный пользовательский тип ${column.typeName}")
-                "UDT_${random.nextInt(1000)}"
+                "UDT_${ThreadLocalRandom.current().nextInt(1000)}"
             }
         }
     }
@@ -375,6 +398,8 @@ class DataGenerator(private val config: PopulatorConfig) {
      * Генерирует значение для составного типа
      */
     private fun generateCompositeTypeValue(fields: List<CompositeTypeField>): String {
+        val random = ThreadLocalRandom.current()
+        
         val values = fields.map { field ->
             when (field.typeName.lowercase()) {
                 "text", "varchar", "char" -> "\"${faker.lorem().word()}\""

@@ -1,6 +1,6 @@
 
 plugins {
-    kotlin("jvm") version "1.9.20"
+    kotlin("jvm") version "1.8.20"
     application
 }
 
@@ -12,68 +12,61 @@ repositories {
 }
 
 dependencies {
-    // Kotlin
     implementation("org.jetbrains.kotlin:kotlin-stdlib")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-jdk8:1.7.3")
     
-    // Конфигурация (Typesafe Config)
-    implementation("com.typesafe:config:1.4.3")
+    // Database drivers
+    implementation("org.postgresql:postgresql:42.6.0")
+    implementation("org.apache.ignite:ignite-core:2.15.0")
+    implementation("org.apache.ignite:ignite-clients:2.15.0")
     
-    // JDBC драйверы
-    implementation("org.postgresql:postgresql:42.7.1")
-    implementation("org.apache.ignite:ignite-core:2.16.0")
-    implementation("org.apache.ignite:ignite-indexing:2.16.0")
+    // Configuration
+    implementation("com.typesafe:config:1.4.2")
     
-    // Генерация данных
+    // Data generation
     implementation("com.github.javafaker:javafaker:1.0.2")
     
-    // Логирование
-    implementation("ch.qos.logback:logback-classic:1.4.14")
-    implementation("org.slf4j:slf4j-api:2.0.9")
+    // Logging
+    implementation("ch.qos.logback:logback-classic:1.4.11")
+    implementation("org.slf4j:slf4j-api:2.0.7")
     
-    // Тестирование
+    // Testing
     testImplementation("org.jetbrains.kotlin:kotlin-test")
-    testImplementation("org.junit.jupiter:junit-jupiter:5.10.1")
-}
-
-application {
-    mainClass.set("com.databasepopulator.MainKt")
+    testImplementation("org.junit.jupiter:junit-jupiter:5.9.2")
 }
 
 tasks.test {
     useJUnitPlatform()
 }
 
-tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
-    kotlinOptions {
-        jvmTarget = "21"
-        freeCompilerArgs += listOf("-Xjsr305=strict")
-    }
+kotlin {
+    jvmToolchain(11)
 }
 
-tasks.jar {
-    archiveBaseName.set("DatabasePopulator")
-    archiveVersion.set("1.0.0")
-    
-    // Создание "fat jar" с зависимостями
-    from(configurations.runtimeClasspath.get().map { if (it.isDirectory) it else zipTree(it) })
-    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
-    
-    manifest {
-        attributes(
-            "Main-Class" to "com.databasepopulator.MainKt",
-            "Implementation-Title" to "DatabasePopulator",
-            "Implementation-Version" to version
-        )
-    }
+application {
+    mainClass.set("com.databasepopulator.MainKt")
 }
 
-// Дополнительная задача для запуска тестов
 tasks.register<JavaExec>("runTests") {
-    description = "Run comprehensive tests"
     group = "verification"
-    classpath = sourceSets.main.get().runtimeClasspath
+    description = "Запуск тестов подключения к базам данных"
+    classpath = sourceSets["main"].runtimeClasspath
     mainClass.set("TestRunnerKt")
     
-    // Передаем переменные окружения
-    environment("DATABASE_POPULATOR_CONFIG", "./config.conf")
+    doFirst {
+        println("Запуск тестов подключения...")
+    }
+}
+
+tasks.named<JavaExec>("run") {
+    standardInput = System.`in`
+    
+    doFirst {
+        val configPath = System.getenv("DATABASE_POPULATOR_CONFIG")
+        if (configPath.isNullOrEmpty()) {
+            throw GradleException("Переменная окружения DATABASE_POPULATOR_CONFIG не установлена")
+        }
+        println("Использование конфигурации: $configPath")
+    }
 }

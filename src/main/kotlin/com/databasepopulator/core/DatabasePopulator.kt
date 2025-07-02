@@ -6,6 +6,11 @@ import com.databasepopulator.database.DatabaseConnectionManager
 import com.databasepopulator.database.MetadataExtractor
 import com.databasepopulator.generator.DataGenerator
 import java.sql.Connection
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.Executors
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
+import kotlinx.coroutines.*
 
 /**
  * Основной класс для наполнения баз данных синтетическими данными
@@ -16,15 +21,31 @@ class DatabasePopulator(private val config: PopulatorConfig) {
     private val metadataExtractor = MetadataExtractor()
     private val dataGenerator = DataGenerator(config)
     
+    // Пул потоков для параллельной обработки
+    private val executorService = Executors.newFixedThreadPool(
+        Runtime.getRuntime().availableProcessors().coerceAtMost(8)
+    )
+    
     /**
      * Запускает процесс наполнения всех баз данных
      */
     fun populate() {
         println("Начало процесса наполнения баз данных...")
         
-        config.databases.forEach { dbConfig ->
-            println("\nОбработка базы данных: ${dbConfig.name}")
-            populateDatabase(dbConfig)
+        try {
+            // Обрабатываем базы данных параллельно
+            val futures = config.databases.map { dbConfig ->
+                CompletableFuture.supplyAsync({
+                    println("\nОбработка базы данных: ${dbConfig.name}")
+                    populateDatabase(dbConfig)
+                }, executorService)
+            }
+            
+            // Ждем завершения всех баз данных
+            CompletableFuture.allOf(*futures.toTypedArray()).join()
+            
+        } finally {
+            executorService.shutdown()
         }
         
         println("\nВсе базы данных успешно наполнены!")
@@ -48,16 +69,13 @@ class DatabasePopulator(private val config: PopulatorConfig) {
             
             println("Найдено таблиц: ${tableMetadata.size}")
             
-            // Сортируем таблицы по зависимостям (сначала таблицы без внешних ключей)
-            val sortedTables = sortTablesByDependencies(tableMetadata)
+            // Сортируем таблицы по зависимостям и создаем волны обработки
+            val tableWaves = createTableWaves(tableMetadata)
             
-            // Наполняем каждую таблицу
-            sortedTables.forEach { table ->
-                val recordCount = getRecordCountForTable(dbConfig.name, table.name, dbConfig.defaultRecordCount)
-                println("Наполнение таблицы ${table.name} ($recordCount записей)...")
-                
-                dataGenerator.populateTable(connection, table, recordCount)
-                println("Таблица ${table.name} успешно наполнена")
+            // Обрабатываем каждую волну таблиц параллельно
+            tableWaves.forEachIndexed { waveIndex, tablesInWave ->
+                println("Обработка волны ${waveIndex + 1}: ${tablesInWave.size} таблиц")
+                processTableWaveInParallel(connection, dbConfig, tablesInWave)
             }
             
         } finally {
@@ -66,31 +84,66 @@ class DatabasePopulator(private val config: PopulatorConfig) {
     }
     
     /**
-     * Сортирует таблицы по зависимостям (foreign keys)
+     * Создает волны таблиц для параллельной обработки
      */
-    private fun sortTablesByDependencies(tables: List<TableMetadata>): List<TableMetadata> {
-        val sorted = mutableListOf<TableMetadata>()
+    private fun createTableWaves(tables: List<TableMetadata>): List<List<TableMetadata>> {
+        val waves = mutableListOf<List<TableMetadata>>()
+        val processed = mutableSetOf<String>()
         val remaining = tables.toMutableList()
         
         while (remaining.isNotEmpty()) {
-            val tablesToAdd = remaining.filter { table ->
-                // Добавляем таблицы, все foreign keys которых уже обработаны
+            val currentWave = remaining.filter { table ->
+                // Таблицы без зависимостей или с уже обработанными зависимостями
                 table.foreignKeys.all { fk ->
-                    sorted.any { it.name == fk.referencedTable } || fk.referencedTable == table.name
+                    processed.contains(fk.referencedTable) || fk.referencedTable == table.name
                 }
             }
             
-            if (tablesToAdd.isEmpty()) {
-                // Если есть циклические зависимости, добавляем оставшиеся таблицы
-                sorted.addAll(remaining)
+            if (currentWave.isEmpty()) {
+                // Если есть циклические зависимости, добавляем оставшиеся таблицы в текущую волну
+                waves.add(remaining.toList())
                 break
             }
             
-            sorted.addAll(tablesToAdd)
-            remaining.removeAll(tablesToAdd)
+            waves.add(currentWave)
+            processed.addAll(currentWave.map { it.name })
+            remaining.removeAll(currentWave)
         }
         
-        return sorted
+        return waves
+    }
+    
+    /**
+     * Обрабатывает волну таблиц параллельно
+     */
+    private fun processTableWaveInParallel(
+        baseConnection: Connection, 
+        dbConfig: com.databasepopulator.config.DatabaseConfig, 
+        tables: List<TableMetadata>
+    ) {
+        val futures = tables.map { table ->
+            CompletableFuture.supplyAsync({
+                // Создаем отдельное соединение для каждого потока
+                val connection = connectionManager.getConnection(dbConfig)
+                
+                try {
+                    val recordCount = getRecordCountForTable(dbConfig.name, table.name, dbConfig.defaultRecordCount)
+                    println("Наполнение таблицы ${table.name} ($recordCount записей)...")
+                    
+                    dataGenerator.populateTable(connection, table, recordCount)
+                    println("Таблица ${table.name} успешно наполнена")
+                    
+                } catch (e: Exception) {
+                    println("Ошибка при наполнении таблицы ${table.name}: ${e.message}")
+                    throw e
+                } finally {
+                    connection.close()
+                }
+            }, executorService)
+        }
+        
+        // Ждем завершения всех таблиц в текущей волне
+        CompletableFuture.allOf(*futures.toTypedArray()).join()
     }
     
     /**
